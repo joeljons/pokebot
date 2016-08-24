@@ -26,6 +26,11 @@
             <artifactId>geocalc</artifactId>
             <version>0.5.1</version>
         </dependency>
+        <dependency>
+            <groupId>net.iharder.jpushbullet2</groupId>
+            <artifactId>jpushbullet2</artifactId>
+            <version>0.3.0</version>
+        </dependency>
     </dependencies>
 
     <build>
