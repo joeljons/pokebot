@@ -33,6 +33,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Random;
 import java.util.Set;
+import java.util.TimeZone;
 
 import static java.nio.file.Files.lines;
 import static java.nio.file.Paths.get;
@@ -47,7 +48,7 @@ public class FindPokemons {
     static {
         properties = new Properties();
         try {
-            properties.load(new FileReader("pokebot.properties"));
+            properties.load(new FileReader(System.getProperty("pokebot.properties", "pokebot.properties")));
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -60,8 +61,8 @@ public class FindPokemons {
     private static final int POKEMON_SPAM_LIMIT = Integer.valueOf(properties.getProperty("spamlimit"));
     private static final String SLACK_CHANNEL = properties.getProperty("slack.channel");
     private static final String MY_SLACK_IM_CHANNEL = properties.getProperty("slack.imchannel");
-    private static final String LOGFILE = "logfile.txt";
-    static final String MY_CAPTURED = "my_captured.txt";
+    private static final String LOGFILE = properties.getProperty("logfile");
+    static final String MY_CAPTURED = properties.getProperty("mycaptured");
     private static Random random = new Random();
 
     @SuppressWarnings({"Duplicates", "InfiniteLoopStatement"})
@@ -133,7 +134,9 @@ public class FindPokemons {
                             pokemon.getLongitude(),
                             pokemon.getEncounterId()));
 
-                    String expiration = new SimpleDateFormat("HH:mm:ss").format(new Date(pokemon.getExpirationTimestampMs()));
+                    SimpleDateFormat dateFormatter = new SimpleDateFormat("HH:mm:ss");
+                    dateFormatter.setTimeZone(TimeZone.getTimeZone(properties.getProperty("timezone", TimeZone.getDefault().getID())));
+                    String expiration = dateFormatter.format(new Date(pokemon.getExpirationTimestampMs()));
                     long secondsLeft = (pokemon.getExpirationTimestampMs() - new Date().getTime()) / 1000;
                     String message = String.format(Locale.ENGLISH, "%s expires in %d s (%s) %d m %s",
                             pokemonId,
@@ -142,7 +145,7 @@ public class FindPokemons {
                             (int) getDistance(pokemon),
                             getBearingString(pokemon));
 
-                    if (capturedPokemons != null && capturedPokemons.add(pokemonId) && MY_SLACK_IM_CHANNEL == null) {
+                    if (capturedPokemons != null && capturedPokemons.add(pokemonId) && MY_SLACK_IM_CHANNEL != null) {
                         sendMessage(httpclient, MY_SLACK_IM_CHANNEL, "Gotta catch em all!!!!!!!\n" + message);
                     }
 
