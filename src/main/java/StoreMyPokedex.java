@@ -18,7 +18,7 @@ public class StoreMyPokedex {
     public static void main(String[] args) throws LoginFailedException, RemoteServerException, IOException {
         OkHttpClient httpClient = new OkHttpClient();
         Properties properties = new Properties();
-        properties.load(new FileReader("pokebot.properties"));
+        properties.load(new FileReader(System.getProperty("pokebot.properties", "pokebot.properties")));
         PokemonGo go = new PokemonGo(new GoogleUserCredentialProvider(httpClient, properties.getProperty("realAccountGoogleRefreshToken")), httpClient);
         Pokedex pokedex = go.getInventories().getPokedex();
         try (PrintStream out = new PrintStream(FindPokemons.MY_CAPTURED)) {
