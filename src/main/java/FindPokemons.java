@@ -8,6 +8,7 @@ import com.pokegoapi.api.map.pokemon.CatchablePokemon;
 import com.pokegoapi.auth.PtcCredentialProvider;
 import com.pokegoapi.exceptions.LoginFailedException;
 import com.pokegoapi.exceptions.RemoteServerException;
+import net.iharder.jpushbullet2.PushbulletClient;
 import okhttp3.OkHttpClient;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.utils.URIBuilder;
@@ -41,6 +42,8 @@ import static java.util.Collections.emptyList;
 import static java.util.Collections.reverseOrder;
 import static java.util.Comparator.comparing;
 import static java.util.stream.Collectors.toSet;
+import static org.apache.commons.lang3.StringUtils.isBlank;
+import static org.apache.commons.lang3.StringUtils.isNotBlank;
 
 public class FindPokemons {
     private static Properties properties;
@@ -58,16 +61,21 @@ public class FindPokemons {
 
     private static final double LATITUDE = Double.valueOf(properties.getProperty("latitude"));
     private static final double LONGITUDE = Double.valueOf(properties.getProperty("longitude"));
+    private static final Point HOME_POINT = new Point(new DegreeCoordinate(LATITUDE), new DegreeCoordinate(LONGITUDE));
     private static final int POKEMON_SPAM_LIMIT = Integer.valueOf(properties.getProperty("spamlimit"));
     private static final String SLACK_CHANNEL = properties.getProperty("slack.channel");
     private static final String MY_SLACK_IM_CHANNEL = properties.getProperty("slack.imchannel");
+    private static final String PUSHBULLET_KEY = properties.getProperty("pushbullet.apikey");
     private static final String LOGFILE = properties.getProperty("logfile");
     static final String MY_CAPTURED = properties.getProperty("mycaptured");
     private static Random random = new Random();
+    private static PushbulletClient pushbulletClient = null;
 
     @SuppressWarnings({"Duplicates", "InfiniteLoopStatement"})
     public static void main(String[] args) throws InterruptedException, LoginFailedException, RemoteServerException, IOException {
-
+        if (isNotBlank(PUSHBULLET_KEY)) {
+            pushbulletClient = new PushbulletClient(PUSHBULLET_KEY);
+        }
 
         CloseableHttpClient httpclient = HttpClients.createDefault();
 
@@ -100,7 +108,19 @@ public class FindPokemons {
 
         PokemonGo go = createGo(httpClient);
 
+        int extraDir = -1;
+
         while (true) {
+            extraDir = (extraDir + 1) % 7;
+            if (isBlank(MY_SLACK_IM_CHANNEL) && isBlank(PUSHBULLET_KEY) && extraDir > 0) {
+                extraDir = 0;
+            }
+            if (extraDir == 0) {
+                go.setLocation(LATITUDE, LONGITUDE, 1);
+            } else {
+                Point point = EarthCalc.pointRadialDistance(HOME_POINT, (extraDir - 1) * 60, 120);
+                go.setLocation(point.getLatitude(), point.getLongitude(), 1);
+            }
             if (Boolean.valueOf(properties.getProperty("officebot")) && outOfOffice()) {
                 System.out.println("Zzzzzzzzz");
                 do {
@@ -126,7 +146,8 @@ public class FindPokemons {
                 }
                 try {
                     PokemonId pokemonId = pokemon.getPokemonId();
-                    seenPokemons.put(pokemonId, seenPokemons.getOrDefault(pokemonId, 0) + 1);
+                    double distance = getDistance(pokemon);
+
                     pokelog.println(String.format(Locale.ENGLISH, "%s\t%d\t%f\t%f\t%d",
                             pokemonId,
                             pokemon.getExpirationTimestampMs(),
@@ -135,37 +156,50 @@ public class FindPokemons {
                             pokemon.getEncounterId()));
 
                     SimpleDateFormat dateFormatter = new SimpleDateFormat("HH:mm:ss");
-                    dateFormatter.setTimeZone(TimeZone.getTimeZone(properties.getProperty("timezone", TimeZone.getDefault().getID())));
+                    if (isNotBlank(properties.getProperty("timezone"))) {
+                        dateFormatter.setTimeZone(TimeZone.getTimeZone(properties.getProperty("timezone")));
+                    }
                     String expiration = dateFormatter.format(new Date(pokemon.getExpirationTimestampMs()));
                     long secondsLeft = (pokemon.getExpirationTimestampMs() - new Date().getTime()) / 1000;
                     String message = String.format(Locale.ENGLISH, "%s expires in %d s (%s) %d m %s",
                             pokemonId,
                             secondsLeft,
                             expiration,
-                            (int) getDistance(pokemon),
+                            (int) distance,
                             getBearingString(pokemon));
 
-                    if (capturedPokemons != null && capturedPokemons.add(pokemonId) && MY_SLACK_IM_CHANNEL != null) {
+                    if (capturedPokemons != null && capturedPokemons.add(pokemonId)) {
                         sendMessage(httpclient, MY_SLACK_IM_CHANNEL, "Gotta catch em all!!!!!!!\n" + message);
+                        if (pushbulletClient != null) {
+                            String result = pushbulletClient.sendLink(null, message, String.format(Locale.ENGLISH,
+                                    "https://maps.googleapis.com/maps/api/staticmap?size=500x500&markers=%f,%f",
+                                    pokemon.getLatitude(),
+                                    pokemon.getLongitude()));
+                            System.out.println("result = " + result);
+                        }
                     }
 
-                    if (seenPokemons.getOrDefault(pokemonId, 0) > POKEMON_SPAM_LIMIT) {
-                        System.out.println("SpamAlert! Already seen " + pokemonId + " " + seenPokemons.get(pokemonId) + " times");
-                        continue;
+                    if (distance < 70) {
+                        seenPokemons.put(pokemonId, seenPokemons.getOrDefault(pokemonId, 0) + 1);
+                        if (seenPokemons.getOrDefault(pokemonId, 0) > POKEMON_SPAM_LIMIT) {
+                            System.out.println("SpamAlert! Already seen " + pokemonId + " " + seenPokemons.get(pokemonId) + " times");
+                            continue;
+                        }
+
+                        System.out.println(message);
+                        sendMessage(httpclient, SLACK_CHANNEL, message);
+                        if (seenPokemons.get(pokemonId) >= POKEMON_SPAM_LIMIT) {
+                            sendMessage(httpclient, SLACK_CHANNEL, "Sorry for spamming about " + pokemonId + " all the time. I'll ignore them from now on.");
+                        }
                     }
 
-                    System.out.println(message);
-                    sendMessage(httpclient, SLACK_CHANNEL, message);
-                    if (seenPokemons.get(pokemonId) >= POKEMON_SPAM_LIMIT) {
-                        sendMessage(httpclient, SLACK_CHANNEL, "Sorry for spamming about " + pokemonId + " all the time. I'll ignore them from now on.");
-                    }
 
                 } catch (Exception e) {
                     e.printStackTrace();
                 }
 
             }
-            Thread.sleep(1000 * 30 + random.nextInt(1000 * 90));
+            Thread.sleep(1000 * 10 + random.nextInt(1000 * 10));
         }
     }
 
@@ -177,6 +211,9 @@ public class FindPokemons {
     }
 
     private static void sendMessage(CloseableHttpClient httpclient, String slackChannel, String message) throws URISyntaxException, IOException {
+        if (isBlank(SLACK_TOKEN) || isBlank(slackChannel) || isBlank(message)) {
+            return;
+        }
         URI uri = new URIBuilder("https://slack.com/api/chat.postMessage")
                 .setCharset(StandardCharsets.UTF_8)
                 .setParameter("token", SLACK_TOKEN)
@@ -191,14 +228,12 @@ public class FindPokemons {
 
     private static double getDistance(CatchablePokemon pokemon) {
         Point point = new Point(new DegreeCoordinate(pokemon.getLatitude()), new DegreeCoordinate(pokemon.getLongitude()));
-        Point home = new Point(new DegreeCoordinate(LATITUDE), new DegreeCoordinate(LONGITUDE));
-        return EarthCalc.getDistance(home, point);
+        return EarthCalc.getDistance(HOME_POINT, point);
     }
 
     private static String getBearingString(CatchablePokemon pokemon) {
         Point point = new Point(new DegreeCoordinate(pokemon.getLatitude()), new DegreeCoordinate(pokemon.getLongitude()));
-        Point home = new Point(new DegreeCoordinate(LATITUDE), new DegreeCoordinate(LONGITUDE));
-        return BearingFinder.getBearingString(home, point);
+        return BearingFinder.getBearingString(HOME_POINT, point);
     }
 
     private static PokemonGo createGo(OkHttpClient httpClient) throws LoginFailedException, RemoteServerException, InterruptedException {
